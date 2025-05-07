@@ -6,12 +6,23 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 )
 
 const (
 	// BaseURL is the base URL for the OOPSpam API
 	BaseURL = "https://api.oopspam.com/v1"
 )
+
+// RateLimitError is returned when the API rate limit is exceeded
+type RateLimitError struct {
+	Limit     int
+	Remaining int
+}
+
+func (e *RateLimitError) Error() string {
+	return fmt.Sprintf("rate limit exceeded: %d requests remaining out of %d allowed per month", e.Remaining, e.Limit)
+}
 
 // Client represents an OOPSpam API client
 type Client struct {
@@ -78,12 +89,12 @@ type DomainReputationResponse struct {
 func (c *Client) makeRequest(endpoint string, requestBody any, responseBody any) error {
 	url := fmt.Sprintf("%s/%s", c.baseURL, endpoint)
 
-	jsonData, err := json.Marshal(requestBody)
+	data, err := json.Marshal(requestBody)
 	if err != nil {
 		return fmt.Errorf("error marshaling request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
 	if err != nil {
 		return fmt.Errorf("error creating request: %w", err)
 	}
@@ -96,6 +107,29 @@ func (c *Client) makeRequest(endpoint string, requestBody any, responseBody any)
 		return fmt.Errorf("error making request: %w", err)
 	}
 	defer resp.Body.Close()
+
+	// Check rate limit headers
+	limitStr := resp.Header.Get("X-RateLimit-Limit")
+	remainingStr := resp.Header.Get("X-RateLimit-Remaining")
+
+	if limitStr != "" && remainingStr != "" {
+		limit, err := strconv.Atoi(limitStr)
+		if err != nil {
+			return fmt.Errorf("error parsing rate limit: %w", err)
+		}
+
+		remaining, err := strconv.Atoi(remainingStr)
+		if err != nil {
+			return fmt.Errorf("error parsing remaining requests: %w", err)
+		}
+
+		if remaining == 0 {
+			return &RateLimitError{
+				Limit:     limit,
+				Remaining: remaining,
+			}
+		}
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
